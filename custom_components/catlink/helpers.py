@@ -16,26 +16,31 @@ class Helper:
     """Helper class for the CatLink integration."""
 
     @classmethod
-    def calculate_update_interval(cls, update_interval_str: str) -> timedelta:
-        """Calculate the update interval as a timedelta object based on the given update_interval_str.
+    def calculate_update_interval(cls, update_interval) -> timedelta:
+        """Calculate the update interval as a timedelta object.
 
         Args:
-            update_interval_str (str): The update interval string in the format "HH:MM:SS".
+            update_interval: The update interval as a string "HH:MM:SS" or timedelta object.
 
         Returns:
             timedelta: The update interval as a timedelta object.
 
         """
+        # If already a timedelta, return it directly
+        if isinstance(update_interval, timedelta):
+            return update_interval
 
-        return (
-            timedelta(minutes=10)
-            if not update_interval_str
-            or not re.match(r"^\d{2}:\d{2}:\d{2}$", update_interval_str)
-            else timedelta(
-                hours=int(update_interval_str[:2]),
-                minutes=int(update_interval_str[3:5]),
-                seconds=int(update_interval_str[6:8]),
-            )
+        # Handle string format "HH:MM:SS"
+        if not update_interval or not isinstance(update_interval, str):
+            return timedelta(minutes=10)
+
+        if not re.match(r"^\d{2}:\d{2}:\d{2}$", update_interval):
+            return timedelta(minutes=10)
+
+        return timedelta(
+            hours=int(update_interval[:2]),
+            minutes=int(update_interval[3:5]),
+            seconds=int(update_interval[6:8]),
         )
 
     @classmethod
