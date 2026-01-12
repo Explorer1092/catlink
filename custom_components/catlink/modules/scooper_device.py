@@ -265,23 +265,36 @@ class ScooperDevice(Device):
         }
 
     async def update_logs(self) -> list:
-        """Update device logs."""
-        api = "token/device/scooper/stats/log/top5"
-        pms = {
-            "deviceId": self.id,
-        }
-        rsp = None
-        try:
-            rsp = await self.account.request(api, pms)
-            rdt = rsp.get("data", {}).get("scooperLogTop5") or []
-        except (TypeError, ValueError) as exc:
-            rdt = {}
-            _LOGGER.error("Got device logs for %s failed: %s", self.name, exc)
-        if not rdt:
-            _LOGGER.warning("Got device logs for %s failed: %s", self.name, rsp)
-        self.logs = rdt
+        """Update device logs for the last 7 days."""
+        api = "token/device/scooper/stats/log/list"
+        all_logs = []
+
+        # Query logs for the last 7 days
+        for days_ago in range(7):
+            query_date = (datetime.datetime.now() - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            pms = {
+                "deviceId": self.id,
+                "date": query_date,
+            }
+            try:
+                rsp = await self.account.request(api, pms)
+                rows = rsp.get("data", {}).get("scooperLogs", {}).get("rows") or []
+                # Add date to each log entry since API only returns time (HH:MM)
+                for log in rows:
+                    if "time" in log and len(log["time"]) <= 5:
+                        log["time"] = f"{query_date} {log['time']}"
+                all_logs.extend(rows)
+            except (TypeError, ValueError) as exc:
+                _LOGGER.error("Got device logs for %s on %s failed: %s", self.name, query_date, exc)
+
+        if not all_logs:
+            _LOGGER.warning("Got device logs for %s failed: no logs found", self.name)
+
+        # Sort by time descending (newest first)
+        all_logs.sort(key=lambda x: x.get("time", ""), reverse=True)
+        self.logs = all_logs
         self._handle_listeners()
-        return rdt
+        return all_logs
 
     def state_attrs(self) -> dict:
         """Return the state attributes."""
