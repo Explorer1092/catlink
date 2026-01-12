@@ -3,6 +3,7 @@
 from collections import deque
 import datetime
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
@@ -431,9 +432,17 @@ class LitterBox(Device):
         api = "token/litterbox/stats/log/list"
         all_logs = []
 
+        # Use device timezone for date calculation
+        device_tz_id = self.data.get("timezoneId", "Asia/Shanghai")
+        try:
+            device_tz = ZoneInfo(device_tz_id)
+        except Exception:
+            device_tz = ZoneInfo("Asia/Shanghai")
+        now_in_device_tz = datetime.datetime.now(device_tz)
+
         # Query logs for the last 7 days
         for days_ago in range(7):
-            query_date = (datetime.datetime.now() - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            query_date = (now_in_device_tz - datetime.timedelta(days=days_ago)).strftime("%Y-%m-%d")
             pms = {
                 "deviceId": self.id,
                 "date": query_date,
