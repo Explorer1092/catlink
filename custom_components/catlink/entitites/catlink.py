@@ -19,7 +19,12 @@ class CatlinkEntity(CoordinatorEntity):
         self._name = name
         self._device = device
         self._option = option or {}
-        self._attr_name = f"{device.name} {name}".strip()
+        # Use custom name from option if provided, otherwise use default
+        custom_name = self._option.get("name")
+        if custom_name:
+            self._attr_name = f"{device.name} {custom_name}".strip()
+        else:
+            self._attr_name = f"{device.name} {name}".strip()
         self._attr_device_id = f"{device.type}_{device.mac}"
         self._attr_unique_id = f"{self._attr_device_id}-{name}"
         mac = device.mac[-4:] if device.mac else device.id
@@ -48,7 +53,14 @@ class CatlinkEntity(CoordinatorEntity):
 
     def update(self) -> None:
         """Update the entity."""
-        if hasattr(self._device, self._name):
+        # Check for callable state function first (for dynamic sensors)
+        state_fn = self._option.get("state")
+        if callable(state_fn):
+            self._attr_state = state_fn()
+            _LOGGER.debug(
+                "Entity update (callable): %s", [self.entity_id, self._name, self._attr_state]
+            )
+        elif hasattr(self._device, self._name):
             self._attr_state = getattr(self._device, self._name)
             _LOGGER.debug(
                 "Entity update: %s", [self.entity_id, self._name, self._attr_state]

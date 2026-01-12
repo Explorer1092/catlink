@@ -2,11 +2,12 @@
 
 from collections import deque
 import datetime
+import re
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.const import PERCENTAGE, UnitOfTemperature
+from homeassistant.const import PERCENTAGE, UnitOfTemperature, UnitOfTime
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .device import Device
@@ -22,6 +23,7 @@ class ScooperDevice(Device):
 
     logs: list
     coordinator_logs = None
+    _pet_cache: dict  # Cache for pet info extracted from logs
 
     def __init__(
         self,
@@ -35,6 +37,7 @@ class ScooperDevice(Device):
         )
         self._error_logs = deque(maxlen=20)
         self.empty_litter_box_weight = self.additional_config.empty_weight or 0.0
+        self._pet_cache = {}
 
     async def async_init(self) -> None:
         """Initialize the device."""
@@ -81,6 +84,67 @@ class ScooperDevice(Device):
         if not log:
             return None
         return f"{log.get('time')} {log.get('event')}"
+
+    def _extract_pets_from_logs(self) -> dict:
+        """Extract pet information from logs.
+
+        Returns a dict: {petId: petName}
+        """
+        pets = {}
+        for log in self.logs:
+            pet_id = log.get("petId")
+            event = log.get("event", "")
+            if pet_id and pet_id not in pets:
+                # Extract pet name from event string (e.g., "wifi peed" -> "wifi")
+                match = re.match(r"^(\S+)\s+", event)
+                if match:
+                    pets[pet_id] = match.group(1)
+                else:
+                    pets[pet_id] = f"pet_{pet_id}"
+        self._pet_cache = pets
+        return pets
+
+    def _get_hours_since_event(self, pet_id: str, event_type: str) -> int | None:
+        """Calculate hours since last event for a specific pet.
+
+        Args:
+            pet_id: The pet ID to filter by
+            event_type: 'pee' or 'poop' to match against event field
+
+        Returns:
+            Hours since last event, or None if no matching event found
+        """
+        event_pattern = "peed" if event_type == "pee" else "pooped"
+
+        # Use device timezone
+        device_tz_id = self.data.get("timezoneId", "Asia/Shanghai")
+        try:
+            device_tz = ZoneInfo(device_tz_id)
+        except Exception:
+            device_tz = ZoneInfo("Asia/Shanghai")
+
+        now = datetime.datetime.now(device_tz)
+
+        for log in self.logs:
+            if log.get("petId") == pet_id and event_pattern in log.get("event", ""):
+                time_str = log.get("time", "")
+                try:
+                    # Parse time string (format: "YYYY-MM-DD HH:MM")
+                    event_time = datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M")
+                    event_time = event_time.replace(tzinfo=device_tz)
+                    delta = now - event_time
+                    return int(delta.total_seconds() / 3600)
+                except (ValueError, TypeError) as exc:
+                    _LOGGER.debug("Failed to parse time %s: %s", time_str, exc)
+                    continue
+        return None
+
+    def _get_pet_sensor_value(self, pet_id: str, event_type: str) -> str:
+        """Get sensor value for pet hours since event."""
+        hours = self._get_hours_since_event(pet_id, event_type)
+        if hours is None:
+            return "unknown"
+        return str(hours)
 
     @property
     def state(self) -> str:
@@ -207,7 +271,7 @@ class ScooperDevice(Device):
     @property
     def hass_sensor(self) -> dict:
         """Return the hass sensor of the device."""
-        return {
+        sensors = {
             "state": {
                 "icon": "mdi:information",
                 "state_attrs": self.state_attrs,
@@ -256,6 +320,28 @@ class ScooperDevice(Device):
                 "state_attrs": self.error_attrs,
             },
         }
+
+        # Add dynamic pet sensors based on logs
+        pets = self._extract_pets_from_logs()
+        for pet_id, pet_name in pets.items():
+            # Hours since last pee
+            sensors[f"{pet_name}_hours_since_pee"] = {
+                "icon": "mdi:water",
+                "name": f"{pet_name} 未排尿",
+                "state": lambda pid=pet_id: self._get_pet_sensor_value(pid, "pee"),
+                "unit": UnitOfTime.HOURS,
+                "state_class": SensorStateClass.MEASUREMENT,
+            }
+            # Hours since last poop
+            sensors[f"{pet_name}_hours_since_poop"] = {
+                "icon": "mdi:emoticon-poop",
+                "name": f"{pet_name} 未排便",
+                "state": lambda pid=pet_id: self._get_pet_sensor_value(pid, "poop"),
+                "unit": UnitOfTime.HOURS,
+                "state_class": SensorStateClass.MEASUREMENT,
+            }
+
+        return sensors
 
     def last_log_attrs(self) -> dict:
         """Return the last log attributes of the device."""
