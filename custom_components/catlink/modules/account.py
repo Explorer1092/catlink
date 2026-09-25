@@ -40,6 +40,7 @@ class Account:
         self._config = config
         self.hass = hass
         self.http = aiohttp_client.async_create_clientsession(hass, auto_cleanup=False)
+        self._last_login: datetime.datetime | None = None
 
     def get_config(self, key, default=None) -> str:
         """Return the config of the account."""
@@ -142,6 +143,19 @@ class Account:
         await self.async_check_auth(True)
         return True
 
+    async def async_login_throttled(self) -> bool:
+        """Login with a cooldown to avoid repeatedly kicking other sessions."""
+        now = datetime.datetime.now()
+        cooldown = datetime.timedelta(minutes=10)
+        if self._last_login and now - self._last_login < cooldown:
+            _LOGGER.warning(
+                "Skip login for %s: cooling down, last login at %s",
+                self.phone,
+                self._last_login,
+            )
+            return False
+        self._last_login = now
+        return await self.async_login()
     async def async_check_auth(self, save=False) -> dict:
         """Check the auth of the account."""
         fnm = f"{DOMAIN}/auth-{self.uid}.json"
@@ -171,14 +185,22 @@ class Account:
     async def get_devices(self) -> list:
         """Get the devices of the account."""
         if not self.token:
-            if not await self.async_login():
+            if not await self.async_login_throttled():
                 return []
         api = "token/device/union/list/sorted"
         rsp = await self.request(api, {"type": "NONE"})
         eno = rsp.get("returnCode", 0)
         if eno == 1002:  # Illegal token
-            if await self.async_login():
-                rsp = await self.request(api, {"type": "NONE"})
+            # CatLink allows only ONE login session per account. Re-logging in
+            # here kicks the mobile app offline, so never auto-relogin on 1002.
+            # Use a dedicated shared account for HA to restore updates.
+            _LOGGER.warning(
+                "Token rejected for %s (another session is active). "
+                "Not re-logging in to avoid kicking the app. "
+                "Use a dedicated CatLink sub-account for Home Assistant.",
+                self.phone,
+            )
+            return []
         dls = rsp.get("data", {}).get(CONF_DEVICES) or []
         if not dls:
             _LOGGER.warning("Got devices for %s failed: %s", self.phone, rsp)
